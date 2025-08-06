@@ -1,0 +1,23 @@
+{
+  "name": "simple-rag-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname localhost --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.0.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "axios": "1.6.0",
+    "@mui/material": "^5.13.0",
+    "@mui/icons-material": "^5.13.0",
+    "react-query": "^3.34.0",
+    "zod": "^3.21.4",
+    "formik": "^2.4.3",
+    "yup": "^0.32.11"
+  }
+}

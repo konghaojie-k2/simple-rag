@@ -5,18 +5,24 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.9.0",
     "docx2txt>=0.9",
-    "faiss-cpu>=1.11.0.post1",
     "fastapi>=0.116.1",
+    "ipykernel>=6.30.1",
     "langchain>=0.3.27",
     "langchain-community>=0.3.27",
     "langchain-openai>=0.3.28",
+    "langchain-postgres>=0.0.12",
     "loguru>=0.7.3",
     "openai>=1.98.0",
+    "psycopg[binary]>=3.0.0",
     "pydantic>=2.11.7",
     "pypdf>=5.9.0",
     "python-dotenv>=1.1.1",
     "python-multipart>=0.0.20",
+    "requests>=2.31.0",
+    "sqlalchemy>=2.0.42",
+    "supabase>=2.8.0",
     "tiktoken>=0.9.0",
     "uvicorn>=0.35.0",
 ]

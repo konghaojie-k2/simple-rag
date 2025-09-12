@@ -19,7 +19,7 @@ RAG Core SDK - 核心RAG功能库
     rag = SimpleRAG(config)
     
     # 添加文档
-    rag.add_documents_from_file("document.pdf")
+    rag.add_file_chunks_from_file("document.pdf")
     
     # 查询
     response = rag.query("你的问题")
@@ -27,7 +27,8 @@ RAG Core SDK - 核心RAG功能库
 """
 
 from .config.models import RAGConfig, RAGResponse, Document
-from .pipeline.simple_rag import SimpleRAG
+from .pipeline.supabase_rag import SupabaseRAG
+from .config.supabase_config import SupabaseConfig
 
 __version__ = "0.1.0"
-__all__ = ["RAGConfig", "RAGResponse", "Document", "SimpleRAG"]
+__all__ = ["RAGConfig", "RAGResponse", "Document", "SupabaseRAG", "SupabaseConfig"]

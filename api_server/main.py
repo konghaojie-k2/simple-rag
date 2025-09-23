@@ -18,6 +18,12 @@ from pydantic import BaseModel, Field
 import io
 import uvicorn
 from dotenv import load_dotenv
+import sys
+
+# 确保项目根目录在模块搜索路径中
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # 导入RAG Core SDK
 from rag_core import RAGConfig, Document

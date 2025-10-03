@@ -18,6 +18,7 @@ from ..config.models import RAGConfig, RAGResponse, Document, ProcessingProgress
 from ..config.supabase_config import SupabaseConfig
 from ..utils.file_processor import FileProcessor
 from ..utils.text_splitter import SmartTextSplitter
+from ..utils.hybrid_storage import HybridFileStorage
 from ..utils.logger import rag_logger
 
 
@@ -30,7 +31,7 @@ class SupabaseRAG:
         
         Args:
             config: RAG配置
-            supabase_config: Supabase配置
+            supabase_config: Supabase配置（包含bucket_name）
         """
         self.config = config
         self.supabase_config = supabase_config
@@ -52,6 +53,12 @@ class SupabaseRAG:
         self.supabase: Client = create_client(
             supabase_config.url,
             supabase_config.key
+        )
+        
+        # 初始化文件存储管理器
+        self.file_storage = HybridFileStorage(
+            supabase_client=self.supabase,
+            bucket_name=supabase_config.bucket_name
         )
         
         # 初始化PostgreSQL引擎
@@ -496,7 +503,7 @@ class SupabaseRAG:
     
     def store_raw_file_only(self, file_content: bytes, filename: str) -> bool:
         """
-        只保存原始文件（不分块处理）
+        只保存原始文件到Storage bucket（不分块处理）
         
         Args:
             file_content: 文件二进制内容
@@ -506,48 +513,23 @@ class SupabaseRAG:
             bool: 是否成功
         """
         try:
-            import hashlib
-            import base64
+            # 使用HybridFileStorage保存文件到Storage bucket
+            file_record = self.file_storage.store_file_sync(
+                file_content=file_content,
+                filename=filename,
+                collection_name=self.supabase_config.collection_name
+            )
             
-            # 计算文件哈希
-            file_hash = hashlib.sha256(file_content).hexdigest()
+            inserted_file_id = file_record["id"]
+            self.logger.info(f"原始文件已保存到Storage: {filename}, ID: {inserted_file_id}, Path: {file_record.get('storage_path')}")
             
-            # 检查文件是否已存在
-            existing_file = self.supabase.table("document_files")\
-                .select("id")\
-                .eq("file_hash", file_hash)\
-                .execute()
-            
-            if existing_file.data:
-                self.logger.info(f"文件已存在: {filename}")
-                return True
-            
-            # 创建新文件记录
-            file_record = {
-                "id": str(uuid.uuid4()),
-                "filename": filename,
-                "original_filename": filename,
-                "content_type": "application/octet-stream",  # 通用类型
-                "file_size": len(file_content),
-                "file_hash": file_hash,
-                "file_content": base64.b64encode(file_content).decode('utf-8'),
-                "collection_name": self.supabase_config.collection_name,
-                "metadata": {"upload_source": "file_api", "chunks_processed": False}
-            }
-            
-            response = self.supabase.table("document_files").insert(file_record).execute()
-            
-            if response.data:
-                inserted_file_id = response.data[0]["id"]
-                self.logger.info(f"原始文件已保存: {filename}, ID: {inserted_file_id}")
-                
-                # 检查是否已有对应的document_metadata记录需要更新file_id
-                self._update_metadata_file_link(filename, inserted_file_id)
+            # 检查是否已有对应的document_metadata记录需要更新file_id
+            self._update_metadata_file_link(filename, inserted_file_id)
             
             return True
             
         except Exception as e:
-            self.logger.error(f"保存原始文件失败: {str(e)}")
+            self.logger.error(f"保存原始文件到Storage失败: {str(e)}")
             return False
     
     def _store_chunk_metadata_only(self, original_docs: List[Document], split_docs: List[Document], filename: str):
@@ -939,7 +921,7 @@ class SupabaseRAG:
     
     def get_file_content(self, file_id: str) -> Optional[Tuple[str, str, bytes]]:
         """
-        获取原始文件内容
+        获取原始文件内容（支持从Storage或数据库获取）
         
         Args:
             file_id: 文件ID
@@ -948,15 +930,27 @@ class SupabaseRAG:
             Tuple[filename, content_type, file_content] 或 None
         """
         try:
-            response = self.supabase.rpc("get_file_content", {"file_id_input": file_id}).execute()
+            # 使用HybridFileStorage获取文件内容
+            result = self.file_storage.get_file_content_sync(file_id)
             
-            if response.data:
-                file_info = response.data[0]
-                return (
-                    file_info["filename"],
-                    file_info["content_type"],
-                    file_info["file_content"]
-                )
+            if result:
+                return result
+            
+            # 如果新方法失败，尝试使用旧的RPC方法作为后备
+            try:
+                response = self.supabase.rpc("get_file_content", {"file_id_input": file_id}).execute()
+                
+                if response.data:
+                    file_info = response.data[0]
+                    import base64
+                    file_content = base64.b64decode(file_info["file_content"]) if isinstance(file_info["file_content"], str) else file_info["file_content"]
+                    return (
+                        file_info["filename"],
+                        file_info["content_type"],
+                        file_content
+                    )
+            except Exception as rpc_error:
+                self.logger.warning(f"RPC方法获取文件失败: {str(rpc_error)}")
             
             return None
             

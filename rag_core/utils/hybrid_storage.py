@@ -14,8 +14,8 @@ from ..utils.logger import rag_logger
 class HybridFileStorage:
     """混合文件存储管理器"""
     
-    # 1MB阈值：小于此大小使用数据库存储，大于此大小使用Storage
-    SIZE_THRESHOLD = 1024 * 1024  
+    # 文件大小阈值：所有文件都使用Storage存储（设为0表示全部使用Storage）
+    SIZE_THRESHOLD = 0  
     
     def __init__(self, supabase_client: Client, bucket_name: str = "documents"):
         """
@@ -52,10 +52,57 @@ class HybridFileStorage:
         """判断是否应该使用Storage存储"""
         return file_size > self.SIZE_THRESHOLD
     
+    def store_file_sync(self, file_content: bytes, filename: str, 
+                       collection_name: str = "default") -> dict:
+        """
+        存储文件（同步版本，所有文件使用Storage）
+        
+        Args:
+            file_content: 文件内容
+            filename: 文件名
+            collection_name: 集合名称
+            
+        Returns:
+            文件信息字典
+        """
+        import uuid
+        
+        file_size = len(file_content)
+        file_hash = hashlib.sha256(file_content).hexdigest()
+        
+        # 检查文件是否已存在
+        existing = self._check_file_exists_sync(file_hash)
+        if existing:
+            self.logger.info(f"文件已存在: {filename}")
+            return existing
+        
+        file_info = {
+            "id": str(uuid.uuid4()),
+            "filename": filename,
+            "original_filename": filename,
+            "content_type": self._guess_content_type(filename),
+            "file_size": file_size,
+            "file_hash": file_hash,
+            "collection_name": collection_name,
+            "metadata": {"upload_source": "storage_bucket", "chunks_processed": False}
+        }
+        
+        # 所有文件都使用Storage存储
+        storage_path = self._store_in_storage_sync(file_content, filename, file_hash)
+        file_info.update({
+            "storage_path": storage_path,
+            "file_content": None  # 不存储在数据库中
+        })
+        self.logger.info(f"文件存储到Storage: {filename} ({file_size} bytes)")
+        
+        # 插入文件记录
+        result = self.supabase.table("document_files").insert(file_info).execute()
+        return result.data[0]
+    
     async def store_file(self, file_content: bytes, filename: str, 
                         collection_name: str = "default") -> dict:
         """
-        存储文件（自动选择存储方式）
+        存储文件（异步版本，自动选择存储方式）
         
         Args:
             file_content: 文件内容
@@ -104,6 +151,28 @@ class HybridFileStorage:
         result = self.supabase.table("document_files").insert(file_info).execute()
         return result.data[0]
     
+    def _store_in_storage_sync(self, file_content: bytes, filename: str, 
+                              file_hash: str) -> str:
+        """将文件存储到Supabase Storage（同步版本）"""
+        # 使用哈希作为文件路径，避免重复和冲突
+        file_extension = Path(filename).suffix
+        storage_path = f"{file_hash[:2]}/{file_hash}{file_extension}"
+        
+        try:
+            # 上传到Storage
+            self.supabase.storage.from_(self.bucket_name).upload(
+                path=storage_path,
+                file=file_content,
+                file_options={
+                    "content-type": self._guess_content_type(filename),
+                    "cache-control": "3600"  # 1小时缓存
+                }
+            )
+            return storage_path
+        except Exception as e:
+            self.logger.error(f"Storage上传失败: {e}")
+            raise
+    
     async def _store_in_storage(self, file_content: bytes, filename: str, 
                               file_hash: str) -> str:
         """将文件存储到Supabase Storage"""
@@ -125,6 +194,46 @@ class HybridFileStorage:
         except Exception as e:
             self.logger.error(f"Storage上传失败: {e}")
             raise
+    
+    def get_file_content_sync(self, file_id: str) -> Optional[Tuple[str, str, bytes]]:
+        """
+        获取文件内容（同步版本）
+        
+        Args:
+            file_id: 文件ID
+            
+        Returns:
+            (filename, content_type, file_content) 或 None
+        """
+        try:
+            # 获取文件信息
+            response = self.supabase.table("document_files")\
+                .select("*")\
+                .eq("id", file_id)\
+                .execute()
+            
+            if not response.data:
+                return None
+            
+            file_info = response.data[0]
+            
+            if file_info.get("storage_path"):
+                # 从Storage下载
+                content = self._download_from_storage_sync(file_info["storage_path"])
+            else:
+                # 从数据库获取
+                import base64
+                content = base64.b64decode(file_info["file_content"]) if file_info.get("file_content") else b""
+            
+            return (
+                file_info["filename"],
+                file_info["content_type"],
+                content
+            )
+            
+        except Exception as e:
+            self.logger.error(f"获取文件内容失败: {e}")
+            return None
     
     async def get_file_content(self, file_id: str) -> Optional[Tuple[str, str, bytes]]:
         """
@@ -201,6 +310,16 @@ class HybridFileStorage:
             self.logger.error(f"获取下载URL失败: {e}")
             return None
     
+    def _download_from_storage_sync(self, storage_path: str) -> bytes:
+        """从Storage下载文件（同步版本）"""
+        try:
+            response = self.supabase.storage.from_(self.bucket_name)\
+                .download(storage_path)
+            return response
+        except Exception as e:
+            self.logger.error(f"Storage下载失败: {e}")
+            raise
+    
     async def _download_from_storage(self, storage_path: str) -> bytes:
         """从Storage下载文件"""
         try:
@@ -210,6 +329,18 @@ class HybridFileStorage:
         except Exception as e:
             self.logger.error(f"Storage下载失败: {e}")
             raise
+    
+    def _check_file_exists_sync(self, file_hash: str) -> Optional[dict]:
+        """检查文件是否已存在（同步版本）"""
+        try:
+            response = self.supabase.table("document_files")\
+                .select("*")\
+                .eq("file_hash", file_hash)\
+                .execute()
+            
+            return response.data[0] if response.data else None
+        except Exception:
+            return None
     
     async def _check_file_exists(self, file_hash: str) -> Optional[dict]:
         """检查文件是否已存在"""

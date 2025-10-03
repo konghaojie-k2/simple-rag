@@ -22,6 +22,9 @@ class SupabaseConfig(BaseModel):
     table_name: str = "documents"
     collection_name: str = "default"
     
+    # Storage配置
+    bucket_name: str = "documents"
+    
     @classmethod
     def from_env(cls, env_dict: dict) -> "SupabaseConfig":
         """从环境变量创建配置"""
@@ -35,7 +38,8 @@ class SupabaseConfig(BaseModel):
             user=env_dict.get("SUPABASE_DB_USER"),
             password=env_dict.get("SUPABASE_DB_PASSWORD"),
             table_name=env_dict.get("SUPABASE_TABLE_NAME", "documents"),
-            collection_name=env_dict.get("SUPABASE_COLLECTION_NAME", "default")
+            collection_name=env_dict.get("SUPABASE_COLLECTION_NAME", "default"),
+            bucket_name=env_dict.get("SUPABASE_BUCKET_NAME", "documents")
         )
     
     @property

@@ -115,10 +115,13 @@ class KnowledgeBase(BaseModel):
 
 class QueryRequest(BaseModel):
     """查询请求模型"""
-    question: str
-    knowledge_base: Optional[str] = "default"
-    top_k: Optional[int] = 5
-    threshold: Optional[float] = 0.7
+    question: str = Field(..., description="用户问题")
+    knowledge_base: Optional[str] = Field(
+        default="default",
+        description="知识库名称。指定具体名称查询单个知识库，使用'all'查询所有知识库"
+    )
+    top_k: Optional[int] = Field(default=5, description="返回结果数量")
+    threshold: Optional[float] = Field(default=0.7, description="相似度阈值")
 
 
 class QueryResponse(BaseModel):
@@ -222,7 +225,7 @@ def get_rag_instance(knowledge_base: str = "default") -> SupabaseRAG:
     try:
         instance = SupabaseRAG(config, supabase_config)
         rag_instances_cache[knowledge_base] = instance
-        logger.info(f"创建并缓存新的RAG实例 - 知识库: {knowledge_base}")
+        logger.info(f"创建并缓存新的RAG实例 - 知识库: {knowledge_base}, Bucket: {supabase_config.bucket_name}")
         return instance
     except Exception as e:
         logger.error(f"创建RAG实例失败 - 知识库: {knowledge_base}, 错误: {str(e)}")
@@ -734,6 +737,8 @@ async def upload_file(
 async def download_file(file_id: str):
     """直接下载指定文件"""
     try:
+        from urllib.parse import quote
+        
         rag = get_rag_instance()
         
         # 直接获取文件内容
@@ -744,12 +749,16 @@ async def download_file(file_id: str):
         
         filename, content_type, file_content = file_result
         
+        # URL编码文件名以支持中文
+        encoded_filename = quote(filename, safe='')
+        
         # 返回文件下载响应
+        # 使用RFC 2231标准格式支持中文文件名
         return StreamingResponse(
             io.BytesIO(file_content),
             media_type=content_type,
             headers={
-                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Content-Length": str(len(file_content))
             }
         )
@@ -914,31 +923,156 @@ async def get_file_chunks(file_id: str):
 
 @app.post("/api/v1/query", response_model=QueryResponse)
 async def query_knowledge_base(request: QueryRequest):
-    """查询知识库"""
+    """
+    查询知识库（支持单知识库和跨知识库查询）
+    
+    **使用方式：**
+    
+    1. **单知识库查询**（默认）：
+       ```json
+       {
+         "question": "什么是机器学习？",
+         "knowledge_base": "default"
+       }
+       ```
+    
+    2. **跨所有知识库查询**：
+       ```json
+       {
+         "question": "什么是机器学习？",
+         "knowledge_base": "all"
+       }
+       ```
+    
+    3. **指定特定知识库**：
+       ```json
+       {
+         "question": "什么是机器学习？",
+         "knowledge_base": "tech_docs"
+       }
+       ```
+    
+    **参数说明：**
+    - `knowledge_base`: 
+      - 指定具体名称：在该知识库中查询
+      - 设为 "all"：跨所有知识库查询
+      - 不指定：默认使用 "default" 知识库
+    """
     try:
-        rag = get_rag_instance()
+        start_time = time.time()
         
-        if rag.get_chunk_count() == 0:
+        # 判断是单知识库查询还是跨知识库查询
+        if request.knowledge_base and request.knowledge_base != "all":
+            # 单知识库查询
+            rag = get_rag_instance(request.knowledge_base)
+            
+            if rag.get_chunk_count() == 0:
+                return QueryResponse(
+                    answer=f"知识库 '{request.knowledge_base}' 为空，请先上传文档。",
+                    sources=[],
+                    query=request.question,
+                    processing_time=time.time() - start_time,
+                    knowledge_base=request.knowledge_base
+                )
+            
+            # 在指定知识库中查询
+            response = rag.query(request.question)
+            logger.info(f"在知识库 '{request.knowledge_base}' 中查询完成: {request.question[:50]}...")
+            
             return QueryResponse(
-                answer="知识库为空，请先上传文档。",
-                sources=[],
+                answer=response.answer,
+                sources=response.sources,
                 query=request.question,
-                processing_time=0,
+                processing_time=response.processing_time,
                 knowledge_base=request.knowledge_base
             )
         
-        # 查询
-        response = rag.query(request.question)
-        
-        logger.info(f"问答完成: {request.question[:50]}...")
-        
-        return QueryResponse(
-            answer=response.answer,
-            sources=response.sources,
-            query=request.question,
-            processing_time=response.processing_time,
-            knowledge_base=request.knowledge_base
-        )
+        else:
+            # 跨所有知识库查询
+            rag_default = get_rag_instance()
+            
+            # 获取所有知识库
+            kb_response = rag_default.supabase.table("knowledge_bases").select("name").execute()
+            knowledge_bases = [kb["name"] for kb in kb_response.data]
+            
+            if not knowledge_bases:
+                return QueryResponse(
+                    answer="系统中没有任何知识库，请先创建知识库并上传文档。",
+                    sources=[],
+                    query=request.question,
+                    processing_time=time.time() - start_time,
+                    knowledge_base="all"
+                )
+            
+            # 在所有知识库中搜索相关文档
+            all_sources = []
+            for kb_name in knowledge_bases:
+                try:
+                    rag = get_rag_instance(kb_name)
+                    if rag.get_chunk_count() > 0 and rag.vector_store:
+                        # 使用相似度搜索获取相关文档
+                        docs = rag.vector_store.similarity_search(
+                            request.question,
+                            k=request.top_k or 3
+                        )
+                        for doc in docs:
+                            # 添加知识库来源信息
+                            doc.metadata["knowledge_base"] = kb_name
+                            all_sources.append(doc)
+                except Exception as e:
+                    logger.warning(f"从知识库 '{kb_name}' 检索失败: {str(e)}")
+            
+            if not all_sources:
+                return QueryResponse(
+                    answer="所有知识库都为空，请先上传文档。",
+                    sources=[],
+                    query=request.question,
+                    processing_time=time.time() - start_time,
+                    knowledge_base="all"
+                )
+            
+            # 使用第一个非空知识库的RAG实例生成答案
+            # （因为LLM模型是共享的，可以用任何实例）
+            rag = get_rag_instance(knowledge_bases[0])
+            
+            # 构建上下文
+            context = "\n\n".join([
+                f"[来自知识库: {doc.metadata.get('knowledge_base', 'unknown')}]\n{doc.page_content}"
+                for doc in all_sources[:10]  # 最多使用10个文档
+            ])
+            
+            # 生成答案
+            prompt = f"""基于以下来自不同知识库的信息，回答用户的问题。
+
+上下文信息：
+{context}
+
+用户问题：{request.question}
+
+请提供详细的答案，并在答案中标注信息来自哪个知识库："""
+            
+            answer = rag.chat_model.invoke(prompt).content
+            
+            # 处理源文档信息
+            sources = []
+            for doc in all_sources[:5]:  # 返回前5个源文档
+                source_info = {
+                    "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
+                    "metadata": doc.metadata,
+                    "knowledge_base": doc.metadata.get("knowledge_base", "unknown")
+                }
+                sources.append(source_info)
+            
+            processing_time = time.time() - start_time
+            logger.info(f"跨知识库查询完成，搜索了 {len(knowledge_bases)} 个知识库: {request.question[:50]}...")
+            
+            return QueryResponse(
+                answer=answer,
+                sources=sources,
+                query=request.question,
+                processing_time=processing_time,
+                knowledge_base="all"
+            )
     
     except Exception as e:
         logger.error(f"问答失败: {str(e)}")

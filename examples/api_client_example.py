@@ -30,6 +30,7 @@ class KnowledgeAPIClient:
             base_url: API服务器地址
         """
         self.base_url = base_url.rstrip('/')
+        print(self.base_url)
         self.session = requests.Session()
         
     def health_check(self) -> Dict[str, Any]:
@@ -316,11 +317,11 @@ class KnowledgeAPIClient:
     def query_knowledge_base(self, question: str, knowledge_base: str = "default", 
                            top_k: int = 5) -> Dict[str, Any]:
         """
-        查询知识库
+        查询知识库（单个知识库）
         
         Args:
             question: 问题
-            knowledge_base: 知识库名称
+            knowledge_base: 知识库名称，默认为"default"
             top_k: 返回结果数量
             
         Returns:
@@ -329,6 +330,30 @@ class KnowledgeAPIClient:
         data = {
             "question": question,
             "knowledge_base": knowledge_base,
+            "top_k": top_k
+        }
+        
+        response = self.session.post(
+            f"{self.base_url}/api/v1/query",
+            json=data
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    def query_all_knowledge_bases(self, question: str, top_k: int = 5) -> Dict[str, Any]:
+        """
+        跨所有知识库查询
+        
+        Args:
+            question: 问题
+            top_k: 每个知识库返回的结果数量
+            
+        Returns:
+            查询结果（包含所有知识库的信息）
+        """
+        data = {
+            "question": question,
+            "knowledge_base": "all",  # 特殊值表示跨所有知识库
             "top_k": top_k
         }
         

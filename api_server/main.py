@@ -287,11 +287,11 @@ async def process_file_for_chunks(task_id: str, file_content: bytes, filename: s
     """异步处理文件分块（只分块处理，不保存原始文件）"""
     try:
         update_task_progress(task_id, "processing", 0.1, "开始处理文件...")
-        
-        rag = get_rag_instance()
-        
+
+        rag = get_rag_instance(knowledge_base)
+
         update_task_progress(task_id, "processing", 0.3, "解析文件内容并分块...")
-        
+
         # 只分块，不保存原始文件
         success = rag.add_chunks_only(file_content, filename)
         
@@ -318,8 +318,8 @@ async def process_file_upload(task_id: str, file_content: bytes, filename: str, 
     """异步处理文件上传（只保存原始文件）"""
     try:
         update_task_progress(task_id, "processing", 0.1, "开始上传文件...")
-        
-        rag = get_rag_instance()
+
+        rag = get_rag_instance(knowledge_base)
         
         update_task_progress(task_id, "processing", 0.5, "保存原始文件...")
         
@@ -656,7 +656,7 @@ async def upload_file_for_chunks(
 async def list_files(knowledge_base: str = Query("default", description="知识库名称")):
     """获取原始文件列表"""
     try:
-        rag = get_rag_instance()
+        rag = get_rag_instance(knowledge_base)
         files_info = rag.get_files_info()
         
         return [
@@ -734,12 +734,12 @@ async def upload_file(
 
 
 @app.get("/api/v1/files/{file_id}/download")
-async def download_file(file_id: str):
+async def download_file(file_id: str, knowledge_base: str = Query("default", description="知识库名称")):
     """直接下载指定文件"""
     try:
         from urllib.parse import quote
-        
-        rag = get_rag_instance()
+
+        rag = get_rag_instance(knowledge_base)
         
         # 直接获取文件内容
         file_result = rag.get_file_content(file_id)
@@ -771,10 +771,10 @@ async def download_file(file_id: str):
 
 
 @app.delete("/api/v1/chunks/{chunk_metadata_id}")
-async def delete_chunks(chunk_metadata_id: str):
+async def delete_chunks(chunk_metadata_id: str, knowledge_base: str = Query("default", description="知识库名称")):
     """删除指定分块元数据的所有分块（保留原始文件）"""
     try:
-        rag = get_rag_instance()
+        rag = get_rag_instance(knowledge_base)
         success = rag.delete_chunks_only(chunk_metadata_id)
         
         if success:
@@ -789,10 +789,10 @@ async def delete_chunks(chunk_metadata_id: str):
 
 
 @app.delete("/api/v1/files/{file_id}")
-async def delete_file(file_id: str):
+async def delete_file(file_id: str, knowledge_base: str = Query("default", description="知识库名称")):
     """删除原始文件及其关联的所有分块（推荐用于前端）"""
     try:
-        rag = get_rag_instance()
+        rag = get_rag_instance(knowledge_base)
         success = rag.delete_file_and_chunks(file_id)
         
         if success:
@@ -810,7 +810,7 @@ async def delete_file(file_id: str):
 async def clear_knowledge_base_content(kb_name: str):
     """清空指定知识库的所有内容（文件和分块）"""
     try:
-        rag = get_rag_instance()
+        rag = get_rag_instance(kb_name)
         success = rag.clear_knowledge_base(kb_name)
         
         if success:
@@ -830,9 +830,9 @@ async def clear_knowledge_base_content(kb_name: str):
 async def search_chunks(request: ChunkSearchRequest):
     """搜索文档分块"""
     start_time = time.time()
-    
+
     try:
-        rag = get_rag_instance()
+        rag = get_rag_instance(request.knowledge_base)
         
         # 使用向量搜索找到相似的分块
         if not rag.vector_store:
@@ -874,12 +874,12 @@ async def search_chunks(request: ChunkSearchRequest):
 
 
 @app.get("/api/v1/chunks/{chunk_metadata_id}/details", response_model=ChunkSearchResponse)
-async def get_chunk_details(chunk_metadata_id: str):
+async def get_chunk_details(chunk_metadata_id: str, knowledge_base: str = Query("default", description="知识库名称")):
     """获取指定分块元数据的所有分块详情"""
     start_time = time.time()
-    
+
     try:
-        rag = get_rag_instance()
+        rag = get_rag_instance(knowledge_base)
         chunks = rag.get_chunks_by_metadata_id(chunk_metadata_id)
         
         processing_time = time.time() - start_time
@@ -897,12 +897,12 @@ async def get_chunk_details(chunk_metadata_id: str):
 
 
 @app.get("/api/v1/files/{file_id}/chunks", response_model=ChunkSearchResponse)
-async def get_file_chunks(file_id: str):
+async def get_file_chunks(file_id: str, knowledge_base: str = Query("default", description="知识库名称")):
     """获取指定文件的所有分块"""
     start_time = time.time()
-    
+
     try:
-        rag = get_rag_instance()
+        rag = get_rag_instance(knowledge_base)
         chunks = rag.get_file_chunks(file_id)
         
         processing_time = time.time() - start_time
